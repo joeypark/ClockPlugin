@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Verlet Cloth Component",
+	"Description": "A simulated verlet cloth component.",
+	"Category": "Tools",
+	"CreatedBy": "Moai Games",
+	"CreatedByURL": "joeypark@moaigames.co.kr",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"Modules": 
+	[
+		{
+			"Name": "VerletClothComponent",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault"
+		}
+	]
+}
