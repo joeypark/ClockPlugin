@@ -186,7 +186,7 @@ public:
 				const float Frac = float(PointIdx) / float(NumPoints-1);
 				FDynamicMeshVertex Vert;
 				Vert.Position = InLines[LineIdx].Points[PointIdx];
-				Vert.TextureCoordinate = FVector2D(AlongFrac, Frac);
+				Vert.TextureCoordinate = FVector2D(Frac, AlongFrac);
 				Vert.Color = FColor::White;
 				Vert.SetTangents(RightDir, VerticalDir, UpDir);
 				OutVertices.Add(Vert);
@@ -272,7 +272,6 @@ public:
 		{
 			if (VisibilityMap & (1 << ViewIndex))
 			{
-				FMatrix LocalToWorld = GetLocalToWorld();
 				const FSceneView* View = Views[ViewIndex];
 				// Draw the mesh.
 				FMeshBatch& Mesh = Collector.AllocateMesh();
@@ -281,7 +280,7 @@ public:
 				Mesh.bWireframe = bWireframe;
 				Mesh.VertexFactory = &VertexFactory;
 				Mesh.MaterialRenderProxy = MaterialProxy;
-				BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(LocalToWorld, GetBounds(), GetLocalBounds(), true, UseEditorDepthTest());
+				BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(GetLocalToWorld(), GetBounds(), GetLocalBounds(), true, UseEditorDepthTest());
 				BatchElement.FirstIndex = 0;
 				BatchElement.NumPrimitives = GetRequiredIndexCount() / 3;
 				BatchElement.MinVertexIndex = 0;
@@ -303,8 +302,8 @@ public:
 						int32 NumPoints = DynamicData->HorizontalLines[LineIdx].Points.Num();
 						for (int32 PointIdx = 0; PointIdx < NumPoints; ++PointIdx)
 						{
-							FVector PointA = LocalToWorld.TransformPosition(DynamicData->HorizontalLines[LineIdx].Points[PointIdx]);
-							FVector PointB = LocalToWorld.TransformPosition(DynamicData->HorizontalLines[LineIdx + 1].Points[PointIdx]);
+							FVector PointA = GetLocalToWorld().TransformPosition(DynamicData->HorizontalLines[LineIdx].Points[PointIdx]);
+							FVector PointB = GetLocalToWorld().TransformPosition(DynamicData->HorizontalLines[LineIdx + 1].Points[PointIdx]);
 							PDI->DrawLine(PointA, PointB, SimulationLineColor, SDPG_Foreground, 0.3f);
 						}						
 					}
@@ -367,7 +366,7 @@ UVerletClothComponent::UVerletClothComponent( const FObjectInitializer& ObjectIn
 	SolverIterations = 10;
 	NumSides = 1;
 	FixedLineCount = 1;
-	Acceleration = FVector(0.0f, 0.0f, -980.0f);
+	Gravity = FVector(0.0f, 0.0f, -980.0f);
 	SideAxis = ESideAxis::X;
 	CollisionPlane = ECollisionPlane::NONE;
 	ProcessWorldSpace = true;
@@ -403,8 +402,8 @@ void UVerletClothComponent::OnRegister()
 
 	FVector CompLocation = GetComponentLocation();
 	const FVector StartPosition = ProcessWorldSpace ? CompLocation : FVector::ZeroVector;
-	const FVector Delta = ProcessWorldSpace ? Acceleration.GetSafeNormal() * ClothLength :
-		ComponentToWorld.InverseTransformVector(Acceleration.GetSafeNormal()) * ClothLength;
+	const FVector Delta = ProcessWorldSpace ? Gravity.GetSafeNormal() * ClothLength :
+		ComponentToWorld.InverseTransformVector(Gravity.GetSafeNormal()) * ClothLength;
 
 	for (int32 LineIdx = 0; LineIdx < NumLines; LineIdx++)
 	{
@@ -430,7 +429,7 @@ void UVerletClothComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 	check( GetWorld()->GetWorldSettings() );
 	float TimeDilation = GetWorld()->GetWorldSettings()->GetEffectiveTimeDilation();
 	// Fixed step simulation at 60hz
-	float FixedTimeStep = FMath::Min( DeltaTime, (1.f / 60.f) * TimeDilation);
+	float FixedTimeStep = FMath::Min( DeltaTime, (1.f / 60.0f) * TimeDilation);
 	float RemainingTime = DeltaTime;
 	
 	{
@@ -556,6 +555,18 @@ void UVerletClothComponent::SolveConstraints()
 	}
 }
 
+void UVerletClothComponent::UpdateAcceleration(const FVector& Gravity, const FVector& WindVec)
+{
+	// For each segment..
+	for (int32 SegIdx = 0; SegIdx < NumSegments; SegIdx++)
+	{
+		FVerletClothHorizontalLine& LineA = HorizontalLines[SegIdx];
+		FVerletClothHorizontalLine& LineB = HorizontalLines[SegIdx + 1];
+		if (LineA.bFree)
+			LineA.UpdateAcceleration(LineB, Gravity, WindVec, (SegIdx == NumSegments - 1));
+	}
+}
+
 void UVerletClothComponent::VerletIntegrate(float InTime)
 {
 	FVector SideAxisVector;
@@ -572,13 +583,26 @@ void UVerletClothComponent::VerletIntegrate(float InTime)
 
 	const int32 NumLines = NumSegments + 1;
 	const float TimeSqr = InTime * InTime;
-	const FVector Gravity = ProcessWorldSpace ? Acceleration : ComponentToWorld.InverseTransformVector(Acceleration);
+	FVector GravityVec = FVector::ZeroVector;
+	if (bUseLocalGravity)
+	{
+		GravityVec = ProcessWorldSpace ? ComponentToWorld.TransformVector(Gravity) : Gravity;		
+	}
+	else
+	{
+		check(GetWorld()->GetWorldSettings());
+		FVector WorldGravity = FVector(0.0f, 0.0f, GetWorld()->GetWorldSettings()->GetGravityZ());
+		GravityVec = ProcessWorldSpace ? WorldGravity : ComponentToWorld.InverseTransformVector(WorldGravity);
+	}
+
+	FVector WindVec = ProcessWorldSpace ? ComponentToWorld.TransformVector(Wind) : Wind;
+	UpdateAcceleration(GravityVec, WindVec);
 
 	for (int32 LineIdx = 0; LineIdx < NumLines; LineIdx++)
 	{
 		FVerletClothHorizontalLine& Line = HorizontalLines[LineIdx];
 		if (Line.bFree)
-			Line.VerletProcess(Gravity, TimeSqr);
+			Line.VerletProcess(TimeSqr);
 		else
 			Line.FixedProcess(CenterLocation, SideAxisVector);
 	}

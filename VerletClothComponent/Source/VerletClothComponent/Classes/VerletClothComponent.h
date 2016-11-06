@@ -32,6 +32,7 @@ struct FVerletClothHorizontalLine
 	{
 		HorizontalWidth = Width;
 		int32 NewSides = FMath::Max(1, NumSides);
+		Acceleration.AddZeroed(NewSides + 1);
 		Positions.AddZeroed(NewSides + 1);
 		SavedPositions.AddZeroed(NewSides + 1);
 	}
@@ -54,12 +55,12 @@ struct FVerletClothHorizontalLine
 		}
 	}
 
-	void VerletProcess(const FVector& Acceleration, float InSubstepTime)
+	void VerletProcess(float InSubstepTime)
 	{
 		for (int32 Idx = 0; Idx < Positions.Num(); ++Idx)
 		{
 			const FVector Vel = (Positions[Idx] - SavedPositions[Idx]);
-			FVector NewPosition = Positions[Idx] + Vel * (1.0f - Damping) + (InSubstepTime * Acceleration);
+			FVector NewPosition = Positions[Idx] + Vel * (1.0f - Damping) + (InSubstepTime * Acceleration[Idx]);
 			SavedPositions[Idx] = Positions[Idx];
 			Positions[Idx] = NewPosition;
 		}
@@ -74,6 +75,51 @@ struct FVerletClothHorizontalLine
 			FVector HorizontalDelta = SideVector * (HorizontalWidth / NumSides);
 			for (int32 Idx = 0; Idx < Positions.Num(); ++Idx)
 				Positions[Idx] = CenterLocation + (HorizontalStart + (HorizontalDelta * Idx)) + SavedPositions[Idx];
+		}
+	}
+
+	void UpdateAcceleration(FVerletClothHorizontalLine& NextLine, const FVector& Gravity, const FVector& Wind, bool bLastSegment)
+	{
+		bool bNoWind = Wind.IsNearlyZero();
+		for (int32 Idx = 0; Idx < Positions.Num(); ++Idx)
+			Acceleration[Idx] = Gravity;
+
+		for (int32 Idx = 0; Idx < Positions.Num() - 1; ++Idx)
+		{
+			if (bNoWind)
+				break;
+
+			FVector First = Positions[Idx + 1] - Positions[Idx];
+			FVector Second = NextLine.Positions[Idx] - Positions[Idx];
+			FVector Normal = FVector::CrossProduct(First, Second).GetSafeNormal();
+			Acceleration[Idx] += (Normal * FVector::DotProduct(Normal, Wind));
+
+			First = NextLine.Positions[Idx + 1] - Positions[Idx + 1];
+			Second = Positions[Idx] - Positions[Idx + 1];
+			Normal = FVector::CrossProduct(First, Second).GetSafeNormal();
+			Acceleration[Idx+1] += (Normal * FVector::DotProduct(Normal, Wind));
+		}
+
+		if (bLastSegment)
+		{
+			for (int32 Idx = 0; Idx < NextLine.Positions.Num(); ++Idx)
+				NextLine.Acceleration[Idx] = Gravity;
+
+			for (int32 Idx = 0; Idx < NextLine.Positions.Num() - 1; ++Idx)
+			{
+				if (bNoWind)
+					break;
+
+				FVector First = Positions[Idx] - NextLine.Positions[Idx];
+				FVector Second = NextLine.Positions[Idx + 1] - NextLine.Positions[Idx];
+				FVector Normal = FVector::CrossProduct(First, Second).GetSafeNormal();
+				NextLine.Acceleration[Idx] += (Normal * FVector::DotProduct(Normal, Wind));
+
+				First = NextLine.Positions[Idx] - NextLine.Positions[Idx + 1];
+				Second = Positions[Idx + 1] - NextLine.Positions[Idx + 1];
+				Normal = FVector::CrossProduct(First, Second).GetSafeNormal();
+				NextLine.Acceleration[Idx + 1] += (Normal * FVector::DotProduct(Normal, Wind));
+			}
 		}
 	}
 
@@ -148,6 +194,8 @@ struct FVerletClothHorizontalLine
 	int32 HorizontalWidth;
 	/** */
 	float Damping;
+	/** Current acceleration of point */
+	TArray<FVector> Acceleration;
 	/** Current position of point */
 	TArray<FVector> Positions;
 	/** if bFree, Position of point on previous iteration. if not, relative Position of previous point */
@@ -170,50 +218,63 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual int32 GetNumMaterials() const override { return 1; }
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Verlet Cloth", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1000.0"))
-	float ClothLength;
-
 	/** How wide the cloth geometry is */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Verlet Cloth", meta = (ClampMin = "0.01", UIMin = "0.01", UIMax = "50.0"))
 	float ClothWidth;
 
+	/** How long the cloth geometry is */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Verlet Cloth", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "1000.0"))
+	float ClothLength;
+
+	/** Damping of the cloth */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Verlet Cloth", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float Damping;
-
-	/** How many segments the cloth has */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth", meta = (ClampMin = "1", UIMin = "1", UIMax = "50"))
-	int32 NumSegments;
 
 	/** The number of solver iterations controls how 'stiff' the cloth is */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Verlet Cloth", meta = (ClampMin = "1", ClampMax = "100"))
 	int32 SolverIterations;
 
-	/** Number of sides of the cloth geometry */
+	/** Number of sides the cloth geometry has. (Horizontal) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 NumSides;
+
+	/** Number of segments the cloth geometry has. (Vertical) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth", meta = (ClampMin = "1", UIMin = "1", UIMax = "50"))
+	int32 NumSegments;
 
 	/** Lines are not freed below this count */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth", meta = (ClampMin = "1"))
 	int32 FixedLineCount;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth")
-	FVector Acceleration;
-
+	/** Including actor's trasform with simulating. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Verlet Cloth")
 	bool ProcessWorldSpace;
 
+	/** Use Component space gravity instead of world setting gravity. */
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Verlet Cloth")
+	bool bUseLocalGravity;
+
+	/** Component space gravity */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth", meta = (EditCondition = "bUseLocalGravity"))
+	FVector Gravity;
+
+	/** Component space wind */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth")
+	FVector Wind;
+
+	/** Horizontal line axis in component space. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth")
 	ESideAxis SideAxis;
 
+	/** Collision plane. if XY plane has selected, Z axis would be the normal which affects collision side. */
 	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "Verlet Cloth" )
 	ECollisionPlane CollisionPlane;	
 
 private:
 
 	void ProcessCollision();
-	/** Solve the cable spring constraints */
 	void SolveConstraints();
-	/** Integrate cable point positions */
+	void UpdateAcceleration(const FVector& Gravity, const FVector& WindVec);
 	void VerletIntegrate(float InTime);
 
 	/** Array of cloth lines */
